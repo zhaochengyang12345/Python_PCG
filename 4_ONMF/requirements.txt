@@ -1,0 +1,8 @@
+numpy>=1.22
+scipy>=1.8
+pandas>=1.4
+matplotlib>=3.5
+
+# CNN 训练（论文 Section 5）
+torch>=1.13
+torchvision>=0.14
