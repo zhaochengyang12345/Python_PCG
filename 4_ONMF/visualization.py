@@ -120,7 +120,8 @@ def plot_all_results(result: dict,
         ax1.set_xlim(t_signal[0], t_signal[-1])
     else:
         ax1.text(0.5, 0.5, '时域信号不可用', ha='center', transform=ax1.transAxes)
-    ax1.set_title(f'PCG 信号（降采样+幅度归一化）', fontsize=10)
+    preproc_desc = result.get('preproc_desc', '')
+    ax1.set_title(f'PCG 信号  [{preproc_desc}]' if preproc_desc else 'PCG 信号（降采样+幅度归一化）', fontsize=10)
     ax1.set_xlabel('时间 (s)')
     ax1.set_ylabel('归一化幅度')
     ax1.grid(True, alpha=0.2, linestyle='--')
@@ -507,7 +508,9 @@ def plot_clean_view(result: dict,
         ax1.set_xlim(t_sig[0], t_sig[-1])
     else:
         ax1.text(0.5, 0.5, '时域信号不可用', ha='center', transform=ax1.transAxes)
-    ax1.set_title('PCG）', fontsize=10)
+    preproc_desc = result.get('preproc_desc', '')
+    ax1_title = f'PCG  [{preproc_desc}]' if preproc_desc else 'PCG'
+    ax1.set_title(ax1_title, fontsize=10)
     ax1.set_xlabel('Time (s)')
     ax1.set_ylabel('Amplitude')
     ax1.grid(True, alpha=0.2, linestyle='--')

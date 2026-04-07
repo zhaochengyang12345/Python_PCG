@@ -51,6 +51,56 @@ def _normalize_columns(W: np.ndarray, eps: float = 1e-10):
 
 
 # ---------------------------------------------------------------------------
+# 时域信号预处理：Hampel 去刺 + 工频陷波 + Butterworth 带通
+# ---------------------------------------------------------------------------
+
+def hampel_filter(x: np.ndarray, half_window: int = 50,
+                  n_sigma: float = 3.0) -> np.ndarray:
+    """
+    Hampel 滑动窗口尖峰检测与替换（向量化实现）。
+
+    half_window : 滑动窗口半径（样本数），默认 50 ≈ 12 ms @ 4096 Hz
+    n_sigma     : 判断阈值（n × 1.4826 × MAD），默认 3σ
+
+    注意：此处用 median_filter(|x - med|) 作为逐窗 MAD 的快速近似，
+    与精确逐点 Hampel 效果相当，速度快约 100×。
+    """
+    from scipy.ndimage import median_filter
+    x = x.copy()
+    k = 1.4826          # 正态分布下 MAD → 标准差一致估计量
+    win = 2 * half_window + 1
+    med = median_filter(x, size=win, mode='nearest')
+    mad = k * median_filter(np.abs(x - med), size=win, mode='nearest')
+    spikes = (mad > 0) & (np.abs(x - med) > n_sigma * mad)
+    x[spikes] = med[spikes]
+    return x
+
+
+def apply_notch_filters(x: np.ndarray, fs: float,
+                        freqs=(50.0, 100.0), Q: float = 30.0) -> np.ndarray:
+    """工频陷波：去除 50 Hz 及其谐波（电网干扰）。"""
+    nyq = fs / 2.0
+    for f0 in freqs:
+        if 0 < f0 < nyq:
+            b, a = scipy_signal.iirnotch(f0, Q, fs)
+            x = scipy_signal.filtfilt(b, a, x)
+    return x
+
+
+def apply_bandpass_filter(x: np.ndarray, fs: float,
+                          low_hz: float = 20.0, high_hz: float = 400.0,
+                          order: int = 4) -> np.ndarray:
+    """4 阶 Butterworth 带通滤波，去除基线漂移与高频噪声。"""
+    nyq = fs / 2.0
+    low  = max(low_hz, 0.5) / nyq
+    high = min(high_hz, nyq * 0.99) / nyq
+    if low >= high:
+        return x
+    b, a = scipy_signal.butter(order, [low, high], btype='band')
+    return scipy_signal.filtfilt(b, a, x)
+
+
+# ---------------------------------------------------------------------------
 # Stage 1: STFT + 频带截取
 # ---------------------------------------------------------------------------
 
@@ -186,6 +236,17 @@ def preprocess_pcg_to_onmf(
     window_size_ms: float = None,
     overlap_ratio: float = None,
     hop_ratio: float = None,
+    # 时域预处理参数
+    apply_hampel: bool = True,
+    hampel_half_window: int = 50,
+    hampel_sigma: float = 3.0,
+    apply_notch: bool = True,
+    notch_freqs: tuple = (50.0, 100.0),
+    notch_Q: float = 30.0,
+    apply_time_bandpass: bool = True,
+    bp_low_hz: float = 20.0,
+    bp_high_hz: float = 400.0,
+    bp_order: int = 4,
     # 以下参数保留签名但忽略 (已移除)
     normalize_signal: bool = True,
     denoise: bool = False,
@@ -200,6 +261,9 @@ def preprocess_pcg_to_onmf(
 
       PCG
         → (降采样到 4096 Hz)
+        → Hampel 尖峰去除（可选，默认开启）
+        → 工频陷波 50/100 Hz（可选，默认开启）
+        → 带通滤波 20–400 Hz（可选，默认开启）
         → 幅度归一化
         → STFT 幅度谱  [N=128, hop=32, n_fft=1024, Hamming]
         → 谱最大值归一化  X ← X / max(X)
@@ -257,6 +321,19 @@ def preprocess_pcg_to_onmf(
     if n_fft is None:
         n_fft = _next_pow2(max(int(fs / 4.0), win_samples))
 
+    # 时域预处理（降采样后、幅度归一化前）
+    preproc_tags = []
+    if apply_hampel:
+        pcg = hampel_filter(pcg, half_window=hampel_half_window, n_sigma=hampel_sigma)
+        preproc_tags.append(f'Hampel({hampel_sigma}σ)')
+    if apply_notch:
+        pcg = apply_notch_filters(pcg, fs, freqs=notch_freqs, Q=notch_Q)
+        preproc_tags.append(f'陷波{list(notch_freqs)}Hz')
+    if apply_time_bandpass:
+        pcg = apply_bandpass_filter(pcg, fs, low_hz=bp_low_hz, high_hz=bp_high_hz,
+                                    order=bp_order)
+        preproc_tags.append(f'带通{bp_low_hz:.0f}-{bp_high_hz:.0f}Hz')
+
     # Algorithm 1 Step 1: 幅度归一化
     mx = np.max(np.abs(pcg))
     if mx > 0:
@@ -280,7 +357,7 @@ def preprocess_pcg_to_onmf(
         'W':           W,
         'H':           H,
         'feature':     H if use_temporal else W,
-        'pcg':         pcg,          # 降采样+幅度归一化后的时域信号
+        'pcg':         pcg,          # 降采样+预处理+幅度归一化后的时域信号
         'S_full':      S_norm,
         'f_full':      f_full,
         'S_band':      S_band,
@@ -291,4 +368,5 @@ def preprocess_pcg_to_onmf(
         'hop_samples': hop_samples,
         'n_fft':       n_fft,
         'fs_processed': fs,
+        'preproc_desc': ' + '.join(preproc_tags) if preproc_tags else '仅归一化',
     }
